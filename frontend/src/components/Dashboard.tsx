@@ -12,6 +12,7 @@ import { useStore } from '@/store/useStore';
 import { useState, useEffect } from 'react';
 
 const CesiumGlobe = dynamic(() => import('./CesiumGlobe'), { ssr: false });
+const Minimap = dynamic(() => import('./Minimap'), { ssr: false });
 
 function formatCoord(val: number, pos: string, neg: string): string {
   const abs = Math.abs(val);
@@ -37,13 +38,15 @@ export default function Dashboard() {
   const entityCount = useStore((s) => s.entityCount);
   const anomalyCount = useStore((s) => s.anomalyCount);
   const connectionStatus = useStore((s) => s.connectionStatus);
+  const cinemaMode = useStore((s) => s.cinemaMode);
+  const showMinimap = useStore((s) => s.showMinimap);
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#000008] text-palantir-text overflow-hidden">
-      {/* Classification banner */}
+      {/* Classification banner — always visible */}
       <div className="h-6 bg-[#1a472a] flex items-center justify-center z-30 relative flex-shrink-0">
         <span className="text-[10px] font-mono font-bold tracking-[0.3em] text-[#4ade80] uppercase">
           unclassified // for official use only
@@ -52,10 +55,12 @@ export default function Dashboard() {
 
       {/* Main row */}
       <div className="flex-1 flex min-h-0 relative">
-        {/* Left panel */}
-        <div className="w-72 flex-shrink-0 z-20 relative">
-          <ControlPanel />
-        </div>
+        {/* Left panel — hidden in cinema mode */}
+        {!cinemaMode && (
+          <div className="w-72 flex-shrink-0 z-20 relative">
+            <ControlPanel />
+          </div>
+        )}
 
         {/* Center globe */}
         <div className="flex-1 min-w-0 relative z-0">
@@ -71,40 +76,78 @@ export default function Dashboard() {
           {/* Notifications */}
           <Notifications />
 
-          {/* Top-left branding */}
-          <div className="absolute top-4 left-4 z-20 pointer-events-none">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 bg-black/70 backdrop-blur-sm border border-white/10 rounded px-3 py-2">
-                <div className="w-2 h-2 rounded-full bg-[#3b82f6] animate-pulse" />
-                <span className="text-[11px] font-mono text-white/90 tracking-[0.15em] uppercase font-medium">
-                  worldview
-                </span>
-              </div>
-              <div className="bg-black/50 backdrop-blur-sm border border-white/10 rounded px-2 py-1.5">
-                <span className="text-[9px] font-mono text-white/50 tracking-wider uppercase">
-                  {mounted && connectionStatus === 'connected' ? 'live' : 'offline'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Top-right stats */}
-          <div className="absolute top-4 right-4 z-20 pointer-events-none">
-            <div className="flex items-center gap-2">
-              <div className="bg-black/50 backdrop-blur-sm border border-white/10 rounded px-3 py-1.5">
-                <span className="text-[10px] font-mono text-white/60">
-                  {entityCount.toLocaleString()} TRACKED
-                </span>
-              </div>
-              {anomalyCount > 0 && (
-                <div className="bg-amber-500/10 backdrop-blur-sm border border-amber-500/20 rounded px-3 py-1.5">
-                  <span className="text-[10px] font-mono text-amber-400">
-                    {anomalyCount} ALERTS
+          {/* Cinema HUD bar — only in cinema mode */}
+          {cinemaMode && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
+              <div className="flex items-center gap-4 bg-black/70 backdrop-blur-sm border border-white/10 rounded-lg px-5 py-2">
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${
+                    connectionStatus === 'connected' ? 'bg-emerald-500' : 'bg-red-500'
+                  }`} />
+                  <span className="text-[10px] font-mono text-white/50 uppercase">
+                    {connectionStatus === 'connected' ? 'live' : 'offline'}
                   </span>
                 </div>
-              )}
+                <div className="w-px h-4 bg-white/10" />
+                <span className="text-[10px] font-mono text-white/50">
+                  {entityCount.toLocaleString()} tracked
+                </span>
+                {anomalyCount > 0 && (
+                  <>
+                    <div className="w-px h-4 bg-white/10" />
+                    <span className="text-[10px] font-mono text-amber-400">
+                      {anomalyCount} alerts
+                    </span>
+                  </>
+                )}
+                <div className="w-px h-4 bg-white/10" />
+                <CinemaClock />
+                <div className="w-px h-4 bg-white/10" />
+                <span className="text-[9px] font-mono text-white/30">
+                  Press F to exit
+                </span>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Top-left branding — hidden in cinema mode */}
+          {!cinemaMode && (
+            <div className="absolute top-4 left-4 z-20 pointer-events-none">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 bg-black/70 backdrop-blur-sm border border-white/10 rounded px-3 py-2">
+                  <div className="w-2 h-2 rounded-full bg-[#3b82f6] animate-pulse" />
+                  <span className="text-[11px] font-mono text-white/90 tracking-[0.15em] uppercase font-medium">
+                    worldview
+                  </span>
+                </div>
+                <div className="bg-black/50 backdrop-blur-sm border border-white/10 rounded px-2 py-1.5">
+                  <span className="text-[9px] font-mono text-white/50 tracking-wider uppercase">
+                    {mounted && connectionStatus === 'connected' ? 'live' : 'offline'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Top-right stats — hidden in cinema mode */}
+          {!cinemaMode && (
+            <div className="absolute top-4 right-4 z-20 pointer-events-none">
+              <div className="flex items-center gap-2">
+                <div className="bg-black/50 backdrop-blur-sm border border-white/10 rounded px-3 py-1.5">
+                  <span className="text-[10px] font-mono text-white/60">
+                    {entityCount.toLocaleString()} TRACKED
+                  </span>
+                </div>
+                {anomalyCount > 0 && (
+                  <div className="bg-amber-500/10 backdrop-blur-sm border border-amber-500/20 rounded px-3 py-1.5">
+                    <span className="text-[10px] font-mono text-amber-400">
+                      {anomalyCount} ALERTS
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Bottom-left coordinate display */}
           <div className="absolute bottom-3 left-4 z-20 pointer-events-none">
@@ -124,6 +167,9 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* Minimap */}
+          {showMinimap && <Minimap />}
+
           {/* Bottom-right source indicator */}
           <div className="absolute bottom-3 right-4 z-20 pointer-events-none">
             <span className="text-[8px] text-white/30 font-mono">
@@ -132,16 +178,41 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Right panel */}
-        <div className="w-80 flex-shrink-0 z-20 relative">
-          <DetailPanel />
-        </div>
+        {/* Right panel — hidden in cinema mode */}
+        {!cinemaMode && (
+          <div className="w-80 flex-shrink-0 z-20 relative">
+            <DetailPanel />
+          </div>
+        )}
       </div>
 
-      {/* Bottom timeline */}
-      <div className="z-20 relative flex-shrink-0">
-        <Timeline />
-      </div>
+      {/* Bottom timeline — hidden in cinema mode */}
+      {!cinemaMode && (
+        <div className="z-20 relative flex-shrink-0">
+          <Timeline />
+        </div>
+      )}
     </div>
   );
+}
+
+function CinemaClock() {
+  const [time, setTime] = useState('');
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    const update = () => {
+      const now = new Date();
+      setTime(
+        `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}:${String(now.getUTCSeconds()).padStart(2, '0')}Z`
+      );
+    };
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!mounted) return <span className="text-[10px] font-mono text-white/50">--:--:--Z</span>;
+  return <span className="text-[10px] font-mono text-white/50">{time}</span>;
 }

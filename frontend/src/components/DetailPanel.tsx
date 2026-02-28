@@ -52,7 +52,7 @@ export default function DetailPanel() {
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/[0.06] text-white/40 uppercase font-mono">
                 {selectedEntity.type}
               </span>
-              {selectedEntity.metadata.isMilitary && (
+              {!!selectedEntity.metadata.isMilitary && (
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 uppercase font-mono font-bold">
                   mil
                 </span>

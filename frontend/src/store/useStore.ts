@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { GeoEntity, Anomaly, Cluster, EntityType, FilterCriteria } from '@/types';
 
+export interface Bookmark {
+  id: string;
+  name: string;
+  lng: number;
+  lat: number;
+  alt: number;
+}
+
 interface DashboardState {
   // Entity state
   entities: Map<string, GeoEntity>;
@@ -16,6 +24,18 @@ interface DashboardState {
   showHeatmap: boolean;
   showClusters: boolean;
   isPaused: boolean;
+  showDayNight: boolean;
+  cinemaMode: boolean;
+  showLabels: boolean;
+  showTrails: boolean;
+  showMinimap: boolean;
+
+  // Bookmarks
+  flyToBookmark: Bookmark | null;
+  customBookmarks: Bookmark[];
+
+  // Camera viewport (for minimap)
+  cameraViewRect: { west: number; south: number; east: number; north: number } | null;
 
   // Filters
   filters: FilterCriteria;
@@ -47,6 +67,15 @@ interface DashboardState {
   toggleHeatmap: () => void;
   toggleClusters: () => void;
   togglePause: () => void;
+  toggleDayNight: () => void;
+  toggleCinemaMode: () => void;
+  toggleLabels: () => void;
+  toggleTrails: () => void;
+  toggleMinimap: () => void;
+  setFlyToBookmark: (bookmark: Bookmark | null) => void;
+  addCustomBookmark: (bookmark: Bookmark) => void;
+  removeCustomBookmark: (id: string) => void;
+  setCameraViewRect: (rect: DashboardState['cameraViewRect']) => void;
   setFilters: (filters: Partial<FilterCriteria>) => void;
   toggleType: (type: EntityType) => void;
   setTimelinePosition: (pos: number) => void;
@@ -65,6 +94,14 @@ export const useStore = create<DashboardState>((set, get) => ({
   showHeatmap: false,
   showClusters: true,
   isPaused: false,
+  showDayNight: false,
+  cinemaMode: false,
+  showLabels: false,
+  showTrails: false,
+  showMinimap: false,
+  flyToBookmark: null,
+  customBookmarks: [],
+  cameraViewRect: null,
   filters: {},
   activeTypes: new Set(['flight', 'ship', 'satellite', 'vehicle', 'event']),
   timelinePosition: 1,
@@ -115,6 +152,26 @@ export const useStore = create<DashboardState>((set, get) => ({
   toggleClusters: () => set({ showClusters: !get().showClusters }),
 
   togglePause: () => set({ isPaused: !get().isPaused }),
+
+  toggleDayNight: () => set({ showDayNight: !get().showDayNight }),
+
+  toggleCinemaMode: () => set({ cinemaMode: !get().cinemaMode }),
+
+  toggleLabels: () => set({ showLabels: !get().showLabels }),
+
+  toggleTrails: () => set({ showTrails: !get().showTrails }),
+
+  toggleMinimap: () => set({ showMinimap: !get().showMinimap }),
+
+  setFlyToBookmark: (bookmark) => set({ flyToBookmark: bookmark }),
+
+  addCustomBookmark: (bookmark) =>
+    set({ customBookmarks: [...get().customBookmarks, bookmark] }),
+
+  removeCustomBookmark: (id) =>
+    set({ customBookmarks: get().customBookmarks.filter((b) => b.id !== id) }),
+
+  setCameraViewRect: (rect) => set({ cameraViewRect: rect }),
 
   setFilters: (partial) => set({ filters: { ...get().filters, ...partial } }),
 

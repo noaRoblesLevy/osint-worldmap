@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useMemo } from 'react';
-import { useStore } from '@/store/useStore';
+import { useState } from 'react';
+import { useStore, Bookmark } from '@/store/useStore';
 import { EntityType } from '@/types';
 import { TYPE_COLORS, TYPE_LABELS } from '@/lib/entityIcons';
 
@@ -14,6 +14,17 @@ const TYPE_ICONS: Record<EntityType, string> = {
   vehicle: '\uD83D\uDE97',
   event: '\u26A0',
 };
+
+const PRESET_BOOKMARKS: Bookmark[] = [
+  { id: 'global', name: 'Global', lng: 10, lat: 30, alt: 15000000 },
+  { id: 'na', name: 'N. America', lng: -95, lat: 40, alt: 8000000 },
+  { id: 'eu', name: 'Europe', lng: 15, lat: 50, alt: 5000000 },
+  { id: 'me', name: 'Middle East', lng: 45, lat: 28, alt: 4000000 },
+  { id: 'ea', name: 'East Asia', lng: 120, lat: 35, alt: 5000000 },
+  { id: 'pac', name: 'Pacific', lng: 170, lat: 5, alt: 10000000 },
+  { id: 'sa', name: 'S. America', lng: -60, lat: -15, alt: 7000000 },
+  { id: 'af', name: 'Africa', lng: 20, lat: 5, alt: 7000000 },
+];
 
 export default function ControlPanel() {
   const activeTypes = useStore((s) => s.activeTypes);
@@ -29,14 +40,42 @@ export default function ControlPanel() {
   const connectionStatus = useStore((s) => s.connectionStatus);
   const entities = useStore((s) => s.entities);
   const selectEntity = useStore((s) => s.selectEntity);
+
+  // New toggles
+  const showDayNight = useStore((s) => s.showDayNight);
+  const toggleDayNight = useStore((s) => s.toggleDayNight);
+  const showLabels = useStore((s) => s.showLabels);
+  const toggleLabels = useStore((s) => s.toggleLabels);
+  const showTrails = useStore((s) => s.showTrails);
+  const toggleTrails = useStore((s) => s.toggleTrails);
+  const showMinimap = useStore((s) => s.showMinimap);
+  const toggleMinimap = useStore((s) => s.toggleMinimap);
+  const setFlyToBookmark = useStore((s) => s.setFlyToBookmark);
+  const customBookmarks = useStore((s) => s.customBookmarks);
+  const addCustomBookmark = useStore((s) => s.addCustomBookmark);
+  const cameraAlt = useStore((s) => s.cameraAlt);
+  const cursorLat = useStore((s) => s.cursorLat);
+  const cursorLng = useStore((s) => s.cursorLng);
+
   const [searchQuery, setSearchQuery] = useState('');
 
   // Count by type
   const typeCounts: Record<string, number> = { flight: 0, ship: 0, satellite: 0, vehicle: 0, event: 0 };
   entities.forEach((e) => { typeCounts[e.type] = (typeCounts[e.type] || 0) + 1; });
 
+  const handleSaveView = () => {
+    if (cursorLat == null || cursorLng == null || !cameraAlt) return;
+    addCustomBookmark({
+      id: `custom-${Date.now()}`,
+      name: `View ${customBookmarks.length + 1}`,
+      lng: cursorLng,
+      lat: cursorLat,
+      alt: cameraAlt,
+    });
+  };
+
   return (
-    <div className="w-72 bg-[#0d1117] border-r border-white/[0.06] flex flex-col h-full overflow-hidden">
+    <div className="w-72 bg-[#0d1117] border-r border-white/[0.06] flex flex-col h-full overflow-y-auto overflow-x-hidden scrollbar-thin">
       {/* Logo header */}
       <div className="px-5 py-4 border-b border-white/[0.06]">
         <div className="flex items-center gap-2">
@@ -157,7 +196,48 @@ export default function ControlPanel() {
         <div className="space-y-1">
           <ToggleSwitch label="Heatmap" shortcut="H" active={showHeatmap} onClick={toggleHeatmap} />
           <ToggleSwitch label="Clusters" shortcut="C" active={showClusters} onClick={toggleClusters} />
+          <ToggleSwitch label="Day/Night" shortcut="N" active={showDayNight} onClick={toggleDayNight} />
+          <ToggleSwitch label="Labels" shortcut="L" active={showLabels} onClick={toggleLabels} />
+          <ToggleSwitch label="Trails" shortcut="T" active={showTrails} onClick={toggleTrails} />
+          <ToggleSwitch label="Minimap" shortcut="M" active={showMinimap} onClick={toggleMinimap} />
         </div>
+      </div>
+
+      {/* Quick-Fly Bookmarks */}
+      <div className="px-5 py-3 border-b border-white/[0.06]">
+        <h3 className="text-[9px] text-white/30 uppercase tracking-[0.15em] font-mono mb-3">
+          Quick Fly
+        </h3>
+        <div className="grid grid-cols-2 gap-1.5">
+          {PRESET_BOOKMARKS.map((bm) => (
+            <button
+              key={bm.id}
+              onClick={() => setFlyToBookmark(bm)}
+              className="px-2 py-1.5 bg-white/[0.03] border border-white/[0.06] rounded text-[10px] font-mono text-white/50 hover:bg-white/[0.06] hover:text-white/80 transition-all text-left truncate"
+            >
+              {bm.name}
+            </button>
+          ))}
+        </div>
+        {customBookmarks.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {customBookmarks.map((bm) => (
+              <button
+                key={bm.id}
+                onClick={() => setFlyToBookmark(bm)}
+                className="w-full px-2 py-1.5 bg-blue-500/5 border border-blue-500/10 rounded text-[10px] font-mono text-blue-400/70 hover:bg-blue-500/10 transition-all text-left truncate"
+              >
+                {bm.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={handleSaveView}
+          className="w-full mt-2 py-1.5 rounded border border-dashed border-white/[0.08] text-[9px] font-mono text-white/25 hover:text-white/50 hover:border-white/15 transition-all uppercase tracking-wider"
+        >
+          + Save Current View
+        </button>
       </div>
 
       {/* Playback */}
@@ -183,6 +263,11 @@ export default function ControlPanel() {
           {[
             ['H', 'Heatmap'],
             ['C', 'Clusters'],
+            ['N', 'Day/Night'],
+            ['L', 'Labels'],
+            ['T', 'Trails'],
+            ['M', 'Minimap'],
+            ['F', 'Cinema'],
             ['R', 'Reset View'],
             ['Esc', 'Deselect'],
             ['Space', 'Pause/Resume'],

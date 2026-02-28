@@ -1,11 +1,28 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '@/store/useStore';
 import { TYPE_COLORS, TYPE_LABELS } from '@/lib/entityIcons';
 import { GeoEntity, EntityType } from '@/types';
 import { loadCesium } from '@/lib/loadCesium';
 import { getEntityIcon } from '@/lib/cesiumIcons';
+import { lookupAirport } from '@/lib/airportCoords';
+
+const TRAIL_LENGTHS: Record<EntityType, number> = {
+  flight: 20,
+  satellite: 25,
+  ship: 12,
+  vehicle: 6,
+  event: 0,
+};
+const MAX_TRAILS = 500;
+
+const SEVERITY_COLORS: Record<string, string> = {
+  low: '#facc15',
+  medium: '#f97316',
+  high: '#ef4444',
+  critical: '#e879f9',
+};
 
 export default function CesiumGlobe() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -19,6 +36,15 @@ export default function CesiumGlobe() {
   const prevCameraRef = useRef<any>(null);
   const [loading, setLoading] = useState(true);
 
+  // New refs for features
+  const labelsCollectionRef = useRef<any>(null);
+  const labelMap = useRef<Map<string, any>>(new Map());
+  const trailHistoryRef = useRef<Map<string, Array<{ lng: number; lat: number; alt: number }>>>(new Map());
+  const trailPrimitivesRef = useRef<any>(null);
+  const routeEntityRef = useRef<any>(null);
+  const pulseEntitiesRef = useRef<any[]>([]);
+  const viewportTrackingRef = useRef<any>(null);
+
   const entities = useStore((s) => s.entities);
   const activeTypes = useStore((s) => s.activeTypes);
   const selectedEntityId = useStore((s) => s.selectedEntityId);
@@ -26,6 +52,13 @@ export default function CesiumGlobe() {
   const hoverEntity = useStore((s) => s.hoverEntity);
   const setCursorCoords = useStore((s) => s.setCursorCoords);
   const setCameraAlt = useStore((s) => s.setCameraAlt);
+  const setCameraViewRect = useStore((s) => s.setCameraViewRect);
+  const showDayNight = useStore((s) => s.showDayNight);
+  const showLabels = useStore((s) => s.showLabels);
+  const showTrails = useStore((s) => s.showTrails);
+  const flyToBookmark = useStore((s) => s.flyToBookmark);
+  const setFlyToBookmark = useStore((s) => s.setFlyToBookmark);
+  const anomalies = useStore((s) => s.anomalies);
 
   // Initialize Cesium viewer
   useEffect(() => {
@@ -103,6 +136,13 @@ export default function CesiumGlobe() {
           new Cesium.BillboardCollection({ scene: viewer.scene })
         );
         billboardsRef.current = billboards;
+
+        // Create LabelCollection for on-globe callsign labels
+        const lc = viewer.scene.primitives.add(
+          new Cesium.LabelCollection({ scene: viewer.scene })
+        );
+        labelsCollectionRef.current = lc;
+
         viewerRef.current = viewer;
 
         viewer.camera.setView({
@@ -156,10 +196,23 @@ export default function CesiumGlobe() {
           }
         }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
-        // Camera altitude tracking
+        // Camera altitude + viewport tracking
         viewer.camera.changed.addEventListener(() => {
           const carto = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
           setCameraAlt(carto.height);
+
+          // Update viewport rect for minimap
+          try {
+            const rect = viewer.camera.computeViewRectangle();
+            if (rect) {
+              useStore.getState().setCameraViewRect({
+                west: Cesium.Math.toDegrees(rect.west),
+                south: Cesium.Math.toDegrees(rect.south),
+                east: Cesium.Math.toDegrees(rect.east),
+                north: Cesium.Math.toDegrees(rect.north),
+              });
+            }
+          } catch { /* ignore */ }
         });
 
         // Selected entity popup tracking
@@ -199,7 +252,25 @@ export default function CesiumGlobe() {
         viewerRef.current.destroy();
       }
     };
-  }, [selectEntity, hoverEntity, setCursorCoords, setCameraAlt]);
+  }, [selectEntity, hoverEntity, setCursorCoords, setCameraAlt, setCameraViewRect]);
+
+  // === Day/Night Toggle ===
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    viewer.scene.globe.enableLighting = showDayNight;
+    if (viewer.scene.sun) viewer.scene.sun.show = showDayNight;
+    if (viewer.scene.moon) viewer.scene.moon.show = showDayNight;
+
+    if (showDayNight) {
+      // Use real-time clock for sun position
+      viewer.clock.shouldAnimate = true;
+      viewer.clock.currentTime = cesiumRef.current.JulianDate.now();
+    } else {
+      viewer.clock.shouldAnimate = false;
+    }
+  }, [showDayNight]);
 
   // Differential billboard update — only touch changed billboards
   useEffect(() => {
@@ -258,6 +329,273 @@ export default function CesiumGlobe() {
       }
     });
   }, [entities, activeTypes, selectedEntityId]);
+
+  // === On-Globe Labels ===
+  useEffect(() => {
+    const Cesium = cesiumRef.current;
+    const lc = labelsCollectionRef.current;
+    if (!Cesium || !lc) return;
+
+    const existing = labelMap.current;
+
+    if (!showLabels) {
+      // Remove all labels
+      existing.forEach((label) => lc.remove(label));
+      existing.clear();
+      return;
+    }
+
+    const visited = new Set<string>();
+
+    entities.forEach((entity, id) => {
+      if (!activeTypes.has(entity.type)) {
+        const label = existing.get(id);
+        if (label) { lc.remove(label); existing.delete(id); }
+        return;
+      }
+
+      const callsign = entity.metadata.callsign as string;
+      if (!callsign) return;
+
+      visited.add(id);
+      const alt = entity.type === 'satellite' ? entity.altitude : Math.max(entity.altitude, 50);
+
+      let label = existing.get(id);
+      if (label) {
+        label.position = Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, alt);
+      } else {
+        label = lc.add({
+          position: Cesium.Cartesian3.fromDegrees(entity.lng, entity.lat, alt),
+          text: callsign,
+          font: '10px monospace',
+          fillColor: Cesium.Color.WHITE.withAlpha(0.85),
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(14, -2),
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2_000_000),
+          translucencyByDistance: new Cesium.NearFarScalar(100_000, 1.0, 2_000_000, 0.0),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          scale: 1.0,
+        });
+        existing.set(id, label);
+      }
+    });
+
+    existing.forEach((label, id) => {
+      if (!visited.has(id)) {
+        lc.remove(label);
+        existing.delete(id);
+      }
+    });
+  }, [entities, activeTypes, showLabels]);
+
+  // === Entity Motion Trails ===
+  useEffect(() => {
+    const Cesium = cesiumRef.current;
+    const viewer = viewerRef.current;
+    if (!Cesium || !viewer) return;
+
+    // Build position history
+    if (showTrails) {
+      entities.forEach((entity, id) => {
+        if (!activeTypes.has(entity.type) || entity.type === 'event') return;
+        const maxLen = TRAIL_LENGTHS[entity.type];
+        if (!maxLen) return;
+
+        let history = trailHistoryRef.current.get(id);
+        if (!history) {
+          history = [];
+          trailHistoryRef.current.set(id, history);
+        }
+
+        const last = history[history.length - 1];
+        if (!last || last.lng !== entity.lng || last.lat !== entity.lat) {
+          history.push({ lng: entity.lng, lat: entity.lat, alt: entity.type === 'satellite' ? entity.altitude : Math.max(entity.altitude, 50) });
+          if (history.length > maxLen) history.shift();
+        }
+      });
+
+      // Prune trails for entities that no longer exist
+      trailHistoryRef.current.forEach((_, id) => {
+        if (!entities.has(id)) trailHistoryRef.current.delete(id);
+      });
+
+      // Cap total trails
+      if (trailHistoryRef.current.size > MAX_TRAILS) {
+        const keys = Array.from(trailHistoryRef.current.keys());
+        const excess = keys.length - MAX_TRAILS;
+        for (let i = 0; i < excess; i++) trailHistoryRef.current.delete(keys[i]);
+      }
+
+      // Remove old polylines primitive
+      if (trailPrimitivesRef.current) {
+        viewer.scene.primitives.remove(trailPrimitivesRef.current);
+        trailPrimitivesRef.current = null;
+      }
+
+      // Create new PolylineCollection
+      const pc = viewer.scene.primitives.add(new Cesium.PolylineCollection());
+      trailPrimitivesRef.current = pc;
+
+      trailHistoryRef.current.forEach((history, id) => {
+        if (history.length < 2) return;
+        const entity = entities.get(id);
+        if (!entity || !activeTypes.has(entity.type)) return;
+        const color = TYPE_COLORS[entity.type] || '#3b82f6';
+
+        const positions = history.map((p) =>
+          Cesium.Cartesian3.fromDegrees(p.lng, p.lat, p.alt)
+        );
+
+        pc.add({
+          positions,
+          width: 1.5,
+          material: Cesium.Material.fromType('Color', {
+            color: Cesium.Color.fromCssColorString(color).withAlpha(0.4),
+          }),
+        });
+      });
+    } else {
+      // Clear trails
+      if (trailPrimitivesRef.current) {
+        viewer.scene.primitives.remove(trailPrimitivesRef.current);
+        trailPrimitivesRef.current = null;
+      }
+      trailHistoryRef.current.clear();
+    }
+  }, [entities, activeTypes, showTrails]);
+
+  // === Flight Route Arc (selected flight) ===
+  useEffect(() => {
+    const Cesium = cesiumRef.current;
+    const viewer = viewerRef.current;
+    if (!Cesium || !viewer) return;
+
+    // Clean up previous route
+    if (routeEntityRef.current) {
+      viewer.entities.remove(routeEntityRef.current);
+      routeEntityRef.current = null;
+    }
+
+    if (!selectedEntityId) return;
+    const entity = entities.get(selectedEntityId);
+    if (!entity || entity.type !== 'flight') return;
+
+    const originCode = entity.metadata.origin as string | undefined;
+    const destCode = entity.metadata.destination as string | undefined;
+    const originCoords = lookupAirport(originCode || '');
+    const destCoords = lookupAirport(destCode || '');
+
+    if (!originCoords || !destCoords) return;
+
+    const routeEntity = viewer.entities.add({
+      polyline: {
+        positions: Cesium.Cartesian3.fromDegreesArray([
+          originCoords[1], originCoords[0],
+          destCoords[1], destCoords[0],
+        ]),
+        width: 2,
+        arcType: Cesium.ArcType.GEODESIC,
+        material: new Cesium.PolylineDashMaterialProperty({
+          color: Cesium.Color.fromCssColorString('#60a5fa').withAlpha(0.6),
+          dashLength: 16,
+          dashPattern: 255,
+        }),
+        clampToGround: false,
+      },
+    });
+    routeEntityRef.current = routeEntity;
+  }, [selectedEntityId, entities]);
+
+  // === Anomaly Pulse Rings ===
+  useEffect(() => {
+    const Cesium = cesiumRef.current;
+    const viewer = viewerRef.current;
+    if (!Cesium || !viewer) return;
+
+    // Only process high/critical anomalies
+    const pulseWorthy = anomalies.filter(
+      (a) => (a.severity === 'high' || a.severity === 'critical') &&
+        Date.now() - a.timestamp < 15000
+    );
+
+    // Limit to 3 most recent
+    const toPulse = pulseWorthy.slice(-3);
+
+    // Clean up expired pulses
+    pulseEntitiesRef.current = pulseEntitiesRef.current.filter((pe) => {
+      if (Date.now() - pe._createdAt > 10000) {
+        viewer.entities.remove(pe);
+        return false;
+      }
+      return true;
+    });
+
+    // Check if we already have pulses for these anomalies
+    const existingIds = new Set(pulseEntitiesRef.current.map((pe: any) => pe._anomalyId));
+
+    toPulse.forEach((anomaly) => {
+      if (existingIds.has(anomaly.id)) return;
+      if (pulseEntitiesRef.current.length >= 3) return;
+
+      const startTime = Date.now();
+      const color = Cesium.Color.fromCssColorString(SEVERITY_COLORS[anomaly.severity] || '#ef4444');
+
+      const pulseEntity = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(anomaly.lng, anomaly.lat, 0),
+        ellipse: {
+          semiMajorAxis: new Cesium.CallbackProperty(() => {
+            const elapsed = (Date.now() - startTime) % 3000;
+            const t = elapsed / 3000;
+            return 5000 + t * 75000; // 5km → 80km
+          }, false),
+          semiMinorAxis: new Cesium.CallbackProperty(() => {
+            const elapsed = (Date.now() - startTime) % 3000;
+            const t = elapsed / 3000;
+            return 5000 + t * 75000;
+          }, false),
+          material: new Cesium.ColorMaterialProperty(
+            new Cesium.CallbackProperty(() => {
+              const elapsed = (Date.now() - startTime) % 3000;
+              const t = elapsed / 3000;
+              return color.withAlpha(0.4 * (1 - t));
+            }, false)
+          ),
+          height: 0,
+          outline: true,
+          outlineColor: new Cesium.CallbackProperty(() => {
+            const elapsed = (Date.now() - startTime) % 3000;
+            const t = elapsed / 3000;
+            return color.withAlpha(0.6 * (1 - t));
+          }, false),
+          outlineWidth: 1,
+        },
+      });
+      (pulseEntity as any)._anomalyId = anomaly.id;
+      (pulseEntity as any)._createdAt = startTime;
+      pulseEntitiesRef.current.push(pulseEntity);
+    });
+  }, [anomalies]);
+
+  // === Quick-Fly Bookmarks ===
+  useEffect(() => {
+    const Cesium = cesiumRef.current;
+    const viewer = viewerRef.current;
+    if (!Cesium || !viewer || !flyToBookmark) return;
+
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(
+        flyToBookmark.lng,
+        flyToBookmark.lat,
+        flyToBookmark.alt
+      ),
+      duration: 2.0,
+    });
+
+    // Clear bookmark after initiating fly
+    setFlyToBookmark(null);
+  }, [flyToBookmark, setFlyToBookmark]);
 
   // Fly to selected entity / fly back on deselect
   useEffect(() => {
@@ -343,7 +681,7 @@ export default function CesiumGlobe() {
               <span className="text-white font-mono text-[12px] font-semibold">
                 {selectedEntity.metadata.callsign || selectedEntity.id}
               </span>
-              {selectedEntity.metadata.isMilitary && (
+              {!!selectedEntity.metadata.isMilitary && (
                 <span className="text-[8px] px-1 py-0.5 rounded bg-orange-500/30 text-orange-400 font-mono font-bold uppercase">
                   mil
                 </span>
